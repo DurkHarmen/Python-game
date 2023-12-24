@@ -1,16 +1,8 @@
 import pygame
-
-# Initialize pygame
-pygame.init()
-
-# Load your custom icon
-icon = pygame.image.load('_internal/gameintro.ico')
-
-# Set the application icon
-pygame.display.set_icon(icon)
-
-
-import pygame
+import sys
+import os
+import base64
+import io
 import time
 import random
 import tkinter as tk
@@ -18,11 +10,33 @@ from tkinter import simpledialog
 import psycopg2
 import sqlite3
 import tkinter.messagebox as messagebox
+from pygame.sprite import Sprite
+import mysql.connector
+import uuid
+from pygame import quit
 
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
 
+    return os.path.join(base_path, relative_path)
+
+# Initialize pygame
+pygame.init()
+
+# Get the directory containing the executable
+resource_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+
+# Load your custom icon
+icon_image_path = os.path.join(resource_path, "gameintro.ico")
+icon_image = pygame.image.load(icon_image_path)
+pygame.display.set_icon(icon_image)
 # Initialize Pygame modules
 pygame.font.init()
-pygame.init()
 pygame.mixer.init()
 
 # Get the current screen width and height
@@ -33,16 +47,9 @@ WIDTH, HEIGHT = screen_info.current_w, screen_info.current_h
 WIN = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Escape the Matrix")
 
-def play_main_menu_music():
-    global main_menu_music_playing
-    if not main_menu_music_playing:
-        pygame.mixer.music.load("_internal/sound/lobbysound.mp3")
-        pygame.mixer.music.set_volume(0.8)
-        pygame.mixer.music.play(-1)  # Play the music in a loop
-        main_menu_music_playing = True
-
 # Load and scale the background image
-BG = pygame.transform.scale(pygame.image.load("_internal/images/bg.jpg"), (WIDTH, HEIGHT))
+bg_image_path = os.path.join(resource_path, 'images', 'bg.jpg')
+BG = pygame.transform.scale(pygame.image.load(bg_image_path), (WIDTH, HEIGHT))
 
 # Define player properties
 PLAYER_WIDTH = WIDTH // 24
@@ -55,13 +62,20 @@ STAR_HEIGHT = HEIGHT // 27
 STAR_VEL = WIDTH // 320
 
 # Load hit sound effect
-HIT_SOUND = pygame.mixer.Sound("_internal/sound/hit_sound.mp3")
+hit_sound_path = os.path.join(resource_path, 'sound', 'hit_sound.mp3')
+HIT_SOUND = pygame.mixer.Sound(hit_sound_path)
 
 # Define game states
 GAME_STATE_START_MENU = 0
 GAME_STATE_PLAYING = 1
 GAME_STATE_SCOREBOARD = 3
 GAME_STATE_HIGH_SCORES = 4
+
+# level time and when completed
+LEVEL_DURATIONS = [30 + i * 15 for i in range(10)]  # Levels 1-10, increasing by 15 seconds each
+DIFFICULTY_INCREASE_INTERVAL = 60
+
+current_level = 0
 
 game_state = GAME_STATE_START_MENU
 paused = False
@@ -80,20 +94,30 @@ FONT_SIZE = min(WIDTH // 32, HEIGHT // 18)
 FONT = pygame.font.SysFont("comicsans", FONT_SIZE)
 
 # Load game logo
-LOGO = pygame.image.load("_internal/images/gameintro.jpg")
+logo_image_path = os.path.join(resource_path, 'images', 'gameintro.jpg')
+LOGO = pygame.image.load(logo_image_path)
+
+def play_main_menu_music():
+    global main_menu_music_playing
+    if not main_menu_music_playing:
+        pygame.mixer.music.load(os.path.join(resource_path, 'sound', 'lobbysound.mp3'))
+        pygame.mixer.music.set_volume(0.8)
+        pygame.mixer.music.play(-1)  # Play the music in a loop
+        main_menu_music_playing = True
 
 def play_gameplay_music():
-    pygame.mixer.music.load("_internal/sound/gamesound.mp3")
-    pygame.mixer.music.set_volume(0.8)
+    pygame.mixer.music.load(os.path.join(resource_path, 'sound', 'gamesound.mp3'))
+    pygame.mixer.music.set_volume(0.2)
     pygame.mixer.music.play(-1)  # Play the music in a loop
-
 # Function to draw game elements
 def draw(player, elapsed_time, stars, intro=False):
     WIN.blit(BG, (0, 0))
 
     if not intro:
         time_text = FONT.render(f"Time: {round(elapsed_time)}s", 1, "white")
+        
         WIN.blit(time_text, (10, 10))
+        
 
         pygame.draw.rect(WIN, "yellow", player)
 
@@ -107,35 +131,49 @@ def draw(player, elapsed_time, stars, intro=False):
 class Scoreboard:
     def __init__(self, root):
         self.root = root
-        self.root.title("Scoreboard")
-        self.conn = sqlite3.connect('game_scores.db')  # Create a connection to the SQLite database
+        self.conn = mysql.connector.connect(
+            user='root',
+            password='Fg3w9pKs',
+            host='176.117.59.185',
+            database='escapethematrix'
+        )
         self.cursor = self.conn.cursor()
-        
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS high_scores (
-                id INTEGER PRIMARY KEY,
-                name TEXT,
-                time REAL
-            )
-        ''')
-        self.conn.commit()
-        self.load_scores()  # Call the method to load scores at initialization
+        self.create_high_scores_table()
 
-    def load_scores(self):
+    
+
+    def load_user_scores(self):
         self.cursor.execute('''
             SELECT name, time FROM high_scores
-            ORDER BY time DESC
+            ORDER BY time ASC
             LIMIT 3
         ''')
-        top_scores = self.cursor.fetchall()
+        user_scores = self.cursor.fetchall()
 
         display_text = ""
-        for i, (name, time) in enumerate(top_scores):
+        for i, (name, time) in enumerate(user_scores):
             display_text += f"{i + 1}. {name}: {time} seconds\n"
         print(display_text)  # Displaying scores for testing purposes
 
-    def add_score(self, name, time):
-        self.cursor.execute("INSERT INTO high_scores (name, time) VALUES (?, ?)", (name, time))
+    def add_score(self, name, elapsed_time):
+        # Use the player_id to associate scores with the player
+        self.cursor.execute(
+            "INSERT INTO high_scores (name, time) VALUES (%s, %s)",
+            (name, elapsed_time)
+        )
+        self.conn.commit()
+
+    def create_high_scores_table(self):
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS high_scores (
+                id SERIAL PRIMARY KEY,
+                user_id VARCHAR(255),
+                name TEXT,
+                time REAL,
+                points INTEGER,
+                FOREIGN KEY (user_id) REFERENCES player_info(user_id)
+            );
+        ''')
         self.conn.commit()
 
     def get_top_scores(self):
@@ -146,14 +184,42 @@ class Scoreboard:
         ''')
         top_scores = self.cursor.fetchall()
         return top_scores
+# Example usage
+def initialize_player(player_name):
+    # Check if the player already has a user_id
+    Scoreboard.cursor.execute("SELECT user_id FROM player_info WHERE player_name = %s", (player_name,))
+    result = Scoreboard.cursor.fetchone()
 
-    def handle_events(self):
-        global game_state
+    if result:
+        user_id = result[0]
+    else:
+        # If not, generate a new user_id
+        user_id = str(uuid.uuid4())
+        # Insert the new user_id into the database
+        Scoreboard.cursor.execute("INSERT INTO player_info (player_name, user_id) VALUES (%s, %s)", (player_name, user_id))
+        Scoreboard.conn.commit()
 
-        for event in pygame.event.get():
+    return user_id
+
+
+# Create an instance of the Scoreboard class
+    scoreboard = Scoreboard()
+
+# Example usage
+    player_name = 'Player1'
+    player_id = initialize_player(player_name)
+    print(f"Player ID for {player_name}: {player_id}")
+
+    # Simulate a game with some points
+    scoreboard.start_new_game(player_id)
+    scoreboard.add_score(player_id, "Level 1", 60, 100)
+    scoreboard.load_user_scores(player_id)
+    global game_state
+
+    for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
-                quit()
+                sys.exit()
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_SPACE:
                     game_state = GAME_STATE_PLAYING
@@ -169,6 +235,9 @@ def draw_scoreboard(scores):
 
     title_text = FONT.render("Scoreboard", 1, "white")
     WIN.blit(title_text, (WIDTH // 2 - title_text.get_width() // 2, HEIGHT // 4))
+    
+    scoreboard_text = FONT.render("Press M to go back to main menu", 1, "white")
+    WIN.blit(scoreboard_text, (WIDTH // 2 - scoreboard_text.get_width() // 2, HEIGHT // 8))
 
     y_offset = HEIGHT // 4 + title_text.get_height() + 20
     for i, (name, time) in enumerate(scores):
@@ -200,7 +269,7 @@ def draw_intro():
     pygame.time.delay(intro_duration * 500)  # Delay in milliseconds
 
 # Function to draw the start menu
-def draw_start_menu():
+def draw_start_menu(player):
     WIN.blit(BG, (0, 0))
 
     title_text = FONT.render("Escape the Matrix", 1, "white")
@@ -218,39 +287,46 @@ def draw_start_menu():
     WIN.blit(scoreboard_text, (scoreboard_x, HEIGHT // 2 + FONT_SIZE))
     WIN.blit(exit_text, (exit_x, HEIGHT // 2 + 2 * FONT_SIZE))
 
+    
+
     keys = pygame.key.get_pressed()
     if keys[pygame.K_m] and game_state != GAME_STATE_SCOREBOARD:
         play_main_menu_music()
+    
 
 
-# Function to create stars
-def create_stars():
+def create_stars(level):
     new_stars = []
-    for _ in range(3):
+
+    # Adjust the number of white stars based on the level
+    num_white_stars = 4 + level
+
+    for _ in range(num_white_stars):
         star_x = random.randint(0, WIDTH - STAR_WIDTH)
-        star = pygame.Rect(star_x, -STAR_HEIGHT, STAR_WIDTH, STAR_HEIGHT)
-        new_stars.append(star)
+        star_y = random.randint(-STAR_HEIGHT, 0)
+        white_star = pygame.Rect(star_x, star_y, STAR_WIDTH, STAR_HEIGHT)
+        new_stars.append(white_star)
+
     return new_stars
 
-
-def menu_loop(player, elapsed_time):
+def menu_loop(player, elapsed_time, level):
     global stars, hit, game_state, running, game_over, game_start_time, paused, paused_time, main_menu_music_playing
 
     menu_running = True
-
+    stars = []
     while menu_running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
-                quit()
+                sys.exit()
 
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_SPACE:
                     if not paused:
                         pygame.mixer.music.stop()
-                        elapsed_time = reset_game(player)
+                        elapsed_time = reset_game(player, level)
                         stars.clear()
-                        stars.extend(create_stars())
+                        stars.extend(create_stars(level))
                         running = True
                         game_over = False
                         game_start_time = None
@@ -262,13 +338,13 @@ def menu_loop(player, elapsed_time):
 
                 elif event.key == pygame.K_s:
                     pygame.mixer.music.pause()
-                    elapsed_time = reset_game(player)
+                    elapsed_time = reset_game(player, level)
                     return GAME_STATE_HIGH_SCORES
 
                 elif event.key == pygame.K_q:
                     pygame.quit()
-                    quit()
-
+                    sys.exit()
+                    
                 elif event.key == pygame.K_m:
                     if game_state != GAME_STATE_START_MENU:
                         if not pygame.mixer.music.get_busy():
@@ -279,14 +355,16 @@ def menu_loop(player, elapsed_time):
                         return
 
         if not paused:
-            draw_start_menu()
+            draw_start_menu(player)
             pygame.display.update()
 
     return elapsed_time
 
 
 # Function to reset the game
-def reset_game(player):
+def reset_game(player, level):
+    stars = []
+    
     global game_state, hit, game_start_time
 
     game_state = GAME_STATE_START_MENU
@@ -296,11 +374,16 @@ def reset_game(player):
         game_start_time = time.time()
 
     stars.clear()
-    stars.extend(create_stars())
+    stars.extend(create_stars(level))
 
     player.x = WIDTH // 3
     player.y = HEIGHT - PLAYER_HEIGHT
 
+def draw_message(message):
+    message_text = FONT.render(message, 1, "white")
+    WIN.blit(message_text, (WIDTH // 2 - message_text.get_width() // 2, HEIGHT // 4))
+    pygame.display.update()
+    pygame.time.delay(2000)  # Display the message for 2 seconds
 
 # Function to input player name
 def input_player_name():
@@ -320,17 +403,23 @@ def input_player_name():
         error_message = "Please enter a name!"
         messagebox.showerror("Error", error_message)
         return None
-
-
+    
+    
+"""hier onder zie je de code voor de functionaliteit van de powerups"""     
+     
 def start_game():
-    global game_state, stars, elapsed_time, restart_prompt, game_start_time, paused_time, main_menu_music_playing
+    global game_state, stars, elapsed_time, restart_prompt, game_start_time, paused_time, main_menu_music_playing, current_level
     game_start_time = None
     in_game = False
     restart_prompt = False
     main_menu_music_playing = False
 
-    elapsed_time = 0
+    player = pygame.Rect(WIDTH // 3, HEIGHT - PLAYER_HEIGHT, PLAYER_WIDTH, PLAYER_HEIGHT)
+
+    elapsed_time = reset_game(player, current_level)
+
     paused_time = 0
+    current_level = 0
 
     while True:
         run = True
@@ -338,6 +427,9 @@ def start_game():
 
         intro_timer = 0
         intro_duration = 5
+        
+        star_count = 0
+        star_add_increment = 5000
 
         paused = False
 
@@ -345,26 +437,25 @@ def start_game():
         clock = pygame.time.Clock()
         FPS = 60
 
-        star_add_increment = 2000
-        star_count = 0
-
-        stars = []
-        hit = False
+        last_speed_increase_time = time.time()
 
         first_run = True
+        hit = False
 
         root = tk.Tk()
         root.withdraw()
-
         app = Scoreboard(root)
-
+        app.create_high_scores_table()
+        
+        
         while run:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     run = False
 
             keys = pygame.key.get_pressed()
-
+            
+            
             if keys[pygame.K_m]:
                 if not paused:
                     if game_state == GAME_STATE_PLAYING:
@@ -372,8 +463,8 @@ def start_game():
                     game_state = GAME_STATE_START_MENU
                     stars.clear()
                     hit = False
-                    reset_game(player)
-                    game_state = menu_loop(player, elapsed_time)
+                    reset_game(player, current_level)
+                    game_state = menu_loop(player, elapsed_time, current_level)
                     if game_state == GAME_STATE_PLAYING:
                         if paused_time > 0:
                             game_start_time = time.time() - paused_time
@@ -381,6 +472,7 @@ def start_game():
                             elapsed_time = 0
                     in_game = False
                     main_menu_music_playing = False
+            
 
             if game_state == GAME_STATE_START_MENU and not main_menu_music_playing:
                 play_main_menu_music()
@@ -401,10 +493,10 @@ def start_game():
                         if not main_menu_music_playing:
                             play_main_menu_music()
                             main_menu_music_playing = True
-                        game_state = menu_loop(player, elapsed_time)
+                        game_state = menu_loop(player, elapsed_time, current_level)
                         game_start_time = None
                     else:
-                        draw_start_menu()
+                        draw_start_menu(player)
                         pygame.display.update()
                         restart_prompt = False
                         in_game = False
@@ -424,33 +516,45 @@ def start_game():
                     elapsed_time = time.time() - game_start_time
                     star_count += clock.tick(FPS)
 
+                    if current_level < len(LEVEL_DURATIONS) and elapsed_time > LEVEL_DURATIONS[current_level]:
+                        level_completed_message = f"Completed Level {current_level + 1}"
+                        draw_message(level_completed_message)
+                        current_level += 1
+
                     if star_count > star_add_increment:
-                        for _ in range(3):
-                            star_x = random.randint(0, WIDTH - STAR_WIDTH)
-                            star = pygame.Rect(star_x, -STAR_HEIGHT, STAR_WIDTH, STAR_HEIGHT)
-                            stars.append(star)
+                        if current_level < 5:
+                            stars.extend(create_stars(1))  # Generate fewer stars in early levels
+                        else:
+                            stars.extend(create_stars(current_level))
 
                         star_add_increment = max(200, star_add_increment - 50)
                         star_count = 0
 
-                    for star in stars[:]:
+                    # Inside the game_state == GAME_STATE_PLAYING block
+
+                    for star in stars.copy():  # Iterate through a copy of the stars list
                         star.y += STAR_VEL
                         if star.y > HEIGHT:
                             stars.remove(star)
-                        elif star.y + star.height >= player.y and star.colliderect(player):
-                            stars.remove(star)
+                        else:
+        # Update the player's rectangle
+                            player_rect = pygame.Rect(player.x, player.y, PLAYER_WIDTH, PLAYER_HEIGHT)
+                        if player_rect.colliderect(star):
+            # Handle the collision (e.g., set 'hit' to True)
                             hit = True
-                            HIT_SOUND.play()
-                            break
+                            stars.remove(star)  # Remove the star when there's a collision
+
+# Rest of the code
+
 
                     if hit:
-                        reset_game(player)
+                        reset_game(player, current_level)
                         game_state = GAME_STATE_START_MENU
                         elapsed_time = round(elapsed_time)
                         name = input_player_name()
                         if name is not None:
                             app.add_score(name, elapsed_time)
-                            app.load_scores()
+                            app.load_user_scores()
                             restart_prompt = True
                             in_game = False
                             main_menu_music_playing = False
@@ -480,10 +584,11 @@ def start_game():
         if not run:
             pygame.mixer.music.stop()
             pygame.quit()
+            sys.exit()
 
         if restart_prompt:
             result, elapsed_time, game_start_time, first_run = \
-                prompt_restart_on_screen(player, elapsed_time, game_start_time, first_run)
+            prompt_restart_on_screen(player, current_level, elapsed_time, game_start_time, first_run)
             if result:
                 game_state = GAME_STATE_PLAYING
             restart_prompt = False
@@ -491,23 +596,28 @@ def start_game():
             game_state = GAME_STATE_START_MENU
             restart_prompt = False
 
-def prompt_restart_on_screen(player, elapsed_time, game_start_time, first_run):
-    global restart_prompt
+def prompt_restart_on_screen(player, current_level, elapsed_time, game_start_time, first_run):
+    global restart_prompt, stars
     restart_prompt = True
     restart_text = FONT.render("Do you want to restart? (Y/N)", 1, "white")
     WIN.blit(restart_text, (WIDTH // 2 - restart_text.get_width() // 2, HEIGHT // 2))
-    pygame.display.update()
-
+    
+    stars = []  # Clear stars
+    reset_game(player, current_level)
+    elapsed_time = 0
+    game_start_time = time.time()
+    first_run = True
+    pygame.display.update()  # Move the update here to ensure the prompt is displayed
     while True:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
-                exit()
+                sys.exit()
 
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_y:
                     restart_prompt = False
-                    reset_game(player)
+                    reset_game(player, current_level)
                     elapsed_time = 0
                     game_start_time = time.time()
                     first_run = True
@@ -516,7 +626,7 @@ def prompt_restart_on_screen(player, elapsed_time, game_start_time, first_run):
                     restart_prompt = False
                     first_run = False
                     play_main_menu_music()
-                    draw_start_menu()
+                    draw_start_menu(player)
                     pygame.display.update()
                     return False, elapsed_time, game_start_time, first_run
 
